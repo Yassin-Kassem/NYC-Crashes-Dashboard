@@ -1,117 +1,192 @@
 """
 NYC Motor Vehicle Collisions Dashboard
-Data Loading & Preprocessing
+DuckDB-powered version (Render-friendly)
 """
 
-import pandas as pd
-import numpy as np
-from datetime import datetime
 import os
+import duckdb
+import pandas as pd
+
+import dash
+from dash import dcc, html, Input, Output, State
+import plotly.express as px
+import plotly.graph_objects as go
 
 # =============================================================================
-# LOAD AND PREPARE DATA
+# CONFIG & DATA SOURCES
 # =============================================================================
-
-print("Loading datasets...")
-print("This may take a moment with large datasets...")
-
 
 CRASH_URL = "https://github.com/Yassin-Kassem/NYC-Crashes-Dashboard/releases/download/v1.0/cleaned_collisions_crash_level.csv"
 PERSON_URL = "https://github.com/Yassin-Kassem/NYC-Crashes-Dashboard/releases/download/v1.0/cleaned_collisions_person_level.csv"
 
 ON_RENDER = "RENDER" in os.environ  # Render sets this env variable automatically
-
 print("Running on Render:", ON_RENDER)
 
-if ON_RENDER:
-    print("⚠️ Render detected — loading LIGHT version of the dataset")
-    
-    df_crash = pd.read_csv(
-        CRASH_URL,
-        low_memory=False,
-        usecols=[
-            "COLLISION_ID", "CRASH DATE", "CRASH TIME", "BOROUGH",
-            "NUMBER OF PERSONS INJURED", "NUMBER OF PERSONS KILLED",
-            "LATITUDE", "LONGITUDE", "VEHICLE TYPE CODE 1"
-        ],
-        nrows=60000,
-    )
+# =============================================================================
+# DUCKDB CONNECTION & VIEWS
+# =============================================================================
 
-    df_person = pd.read_csv(
-        PERSON_URL,
-        low_memory=False,
-        usecols=[
-            "COLLISION_ID", "CRASH DATE", "PERSON_TYPE",
-            "PERSON_AGE", "PERSON_SEX", "PERSON_INJURY"
-        ],
-        nrows=60000,
-    )
-else:
-    print("💻 Local environment — loading FULL dataset")
-    df_crash = pd.read_csv(CRASH_URL, low_memory=False)
-    df_person = pd.read_csv(PERSON_URL, low_memory=False)
+print("Setting up DuckDB and registering CSVs...")
 
+con = duckdb.connect()
 
-print(f"Loaded {len(df_crash):,} crashes and {len(df_person):,} person records")
+# We filter 2015–2025 at the view level to reduce data volume a bit
+con.execute(f"""
+    CREATE OR REPLACE VIEW crash AS
+    SELECT *
+    FROM read_csv_auto('{CRASH_URL}', AUTO_DETECT=TRUE)
+    WHERE "CRASH DATE" IS NOT NULL
+      AND year(CAST("CRASH DATE" AS DATE)) BETWEEN 2015 AND 2025
+""")
 
-# Convert dates
-df_crash["CRASH DATE"] = pd.to_datetime(df_crash["CRASH DATE"], errors="coerce")
-df_person["CRASH DATE"] = pd.to_datetime(df_person["CRASH DATE"], errors="coerce")
+con.execute(f"""
+    CREATE OR REPLACE VIEW person AS
+    SELECT *
+    FROM read_csv_auto('{PERSON_URL}', AUTO_DETECT=TRUE)
+    WHERE "CRASH DATE" IS NOT NULL
+      AND year(CAST("CRASH DATE" AS DATE)) BETWEEN 2015 AND 2025
+""")
 
-# Time features
-df_crash["YEAR"] = df_crash["CRASH DATE"].dt.year
-df_crash["MONTH"] = df_crash["CRASH DATE"].dt.month
-df_crash["HOUR"] = pd.to_datetime(
-    df_crash["CRASH TIME"], format="%H:%M:%S", errors="coerce"
-).dt.hour
-
-# Filter to 2015–2025
-df_crash = df_crash[df_crash["YEAR"].between(2015, 2025)].reset_index(drop=True)
-df_person = df_person[
-    df_person["CRASH DATE"].dt.year.between(2015, 2025)
-].reset_index(drop=True)
-
-# Seasons
-df_crash["SEASON"] = df_crash["MONTH"].map(
-    {
-        12: "Winter", 1: "Winter", 2: "Winter",
-        3: "Spring", 4: "Spring", 5: "Spring",
-        6: "Summer", 7: "Summer", 8: "Summer",
-        9: "Fall", 10: "Fall", 11: "Fall",
-    }
-)
-
-# Options
-boroughs = sorted(df_crash["BOROUGH"].dropna().unique().tolist())
-years = sorted(df_crash["YEAR"].dropna().unique().tolist())
-vehicle_cols = [c for c in df_crash.columns if "VEHICLE TYPE CODE" in c.upper()]
-vehicle_types = sorted(
-    df_crash[vehicle_cols[0]].dropna().value_counts().head(30).index.tolist()
-) if vehicle_cols else []
-
-person_types = (
-    sorted(df_person["PERSON_TYPE"].dropna().unique().tolist())
-    if "PERSON_TYPE" in df_person.columns
-    else []
-)
-
-print("Data preparation complete.")
-"""
-NYC Motor Vehicle Collisions Dashboard
-Commit 2 — App Initialization & Layout
-"""
-
-import dash
-from dash import dcc, html
-
-# Reuse data & variables from Commit 1
+print("✅ DuckDB views created (no full in-memory load).")
 
 # =============================================================================
-# INITIALIZE APP
+# GLOBAL METADATA & FILTER OPTIONS
+# =============================================================================
+
+# Column names from crash view
+crash_cols = con.execute("SELECT * FROM crash LIMIT 0").df().columns.tolist()
+
+# Vehicle type columns
+vehicle_cols = [c for c in crash_cols if "VEHICLE TYPE CODE" in c.upper()]
+
+# Borough options
+boroughs_df = con.execute("""
+    SELECT DISTINCT BOROUGH
+    FROM crash
+    WHERE BOROUGH IS NOT NULL
+    ORDER BY BOROUGH
+""").df()
+boroughs = boroughs_df["BOROUGH"].tolist()
+
+# Year options
+years_df = con.execute("""
+    SELECT DISTINCT year(CAST("CRASH DATE" AS DATE)) AS YEAR
+    FROM crash
+    ORDER BY YEAR
+""").df()
+years = years_df["YEAR"].tolist()
+
+# Vehicle type options (top 30 from first vehicle column)
+if vehicle_cols:
+    vcol = vehicle_cols[0]
+    vehicle_types_df = con.execute(f"""
+        SELECT "{vcol}" AS vehicle, COUNT(*) AS cnt
+        FROM crash
+        WHERE "{vcol}" IS NOT NULL
+        GROUP BY vehicle
+        ORDER BY cnt DESC
+        LIMIT 30
+    """).df()
+    vehicle_types = sorted(vehicle_types_df["vehicle"].tolist())
+else:
+    vehicle_types = []
+
+# Person types
+person_cols = con.execute("SELECT * FROM person LIMIT 0").df().columns.tolist()
+if "PERSON_TYPE" in person_cols:
+    person_types_df = con.execute("""
+        SELECT DISTINCT PERSON_TYPE
+        FROM person
+        WHERE PERSON_TYPE IS NOT NULL
+        ORDER BY PERSON_TYPE
+    """).df()
+    person_types = person_types_df["PERSON_TYPE"].tolist()
+else:
+    person_types = []
+
+# Global counts for header meta
+crash_total = con.execute("SELECT COUNT(*) FROM crash").fetchone()[0]
+person_total = con.execute("SELECT COUNT(*) FROM person").fetchone()[0]
+
+print("Filter options prepared.")
+print(f"  Boroughs: {len(boroughs)}")
+print(f"  Years: {len(years)}")
+print(f"  Vehicle types: {len(vehicle_types)}")
+print(f"  Person types: {len(person_types)}")
+print(f"  Crashes: {crash_total:,}")
+print(f"  Person records: {person_total:,}")
+
+# =============================================================================
+# SQL WHERE BUILDERS (FILTER LOGIC)
+# =============================================================================
+
+def build_crash_where(boroughs_sel, years_sel, vehicles_sel):
+    clauses = ["1=1"]
+
+    if boroughs_sel and "ALL" not in boroughs_sel:
+        b_list = "', '".join(boroughs_sel)
+        clauses.append(f"BOROUGH IN ('{b_list}')")
+
+    if years_sel and "ALL" not in years_sel:
+        y_list = ", ".join(str(y) for y in years_sel)
+        clauses.append(f"year(CAST(\"CRASH DATE\" AS DATE)) IN ({y_list})")
+
+    if vehicles_sel and "ALL" not in vehicles_sel and vehicle_cols:
+        v_list = "', '".join(vehicles_sel)
+        vcol = vehicle_cols[0]
+        clauses.append(f"\"{vcol}\" IN ('{v_list}')")
+
+    return " AND ".join(clauses)
+
+
+def build_person_where(boroughs_sel, years_sel, persons_sel):
+    clauses = ["1=1"]
+
+    if boroughs_sel and "ALL" not in boroughs_sel:
+        b_list = "', '".join(boroughs_sel)
+        clauses.append(f"BOROUGH IN ('{b_list}')")
+
+    if years_sel and "ALL" not in years_sel:
+        y_list = ", ".join(str(y) for y in years_sel)
+        clauses.append(f"year(CAST(\"CRASH DATE\" AS DATE)) IN ({y_list})")
+
+    if persons_sel and "ALL" not in persons_sel and "PERSON_TYPE" in person_cols:
+        p_list = "', '".join(persons_sel)
+        clauses.append(f"PERSON_TYPE IN ('{p_list}')")
+
+    return " AND ".join(clauses)
+
+
+# =============================================================================
+# NATURAL LANGUAGE SEARCH
+# =============================================================================
+
+def parse_search_query(query):
+    if not query:
+        return None, None, None
+
+    q = query.lower()
+
+    borough = next((b for b in boroughs if b and b.lower() in q), None)
+    year = next((y for y in years if str(y) in q), None)
+
+    person = None
+    if "pedestrian" in q:
+        person = [p for p in person_types if "pedestrian" in p.lower()]
+    elif "cyclist" in q or "bicyclist" in q:
+        person = [p for p in person_types if "cyclist" in p.lower() or "bicyclist" in p.lower()]
+
+    return ([borough] if borough else None,
+            [year] if year else None,
+            person)
+
+
+# =============================================================================
+# DASH APP SETUP
 # =============================================================================
 
 app = dash.Dash(
-    _name_,
+    __name__,
     meta_tags=[{"name": "viewport", "content": "width=device-width, initial-scale=1"}],
 )
 server = app.server
@@ -133,7 +208,7 @@ app.layout = html.Div(
                 ),
                 html.Div(
                     className="app-header-meta",
-                    children=f"{len(df_crash):,} crashes · {len(df_person):,} people records",
+                    children=f"{crash_total:,} crashes · {person_total:,} person records (2015–2025)",
                 ),
             ],
         ),
@@ -214,81 +289,8 @@ app.layout = html.Div(
     ],
 )
 
-"""
-NYC Dashboard Helper Functions
-Commit 3 — Filtering + Search Parser
-"""
-
 # =============================================================================
-# FILTERING FUNCTIONS
-# =============================================================================
-
-def filter_data(df, boroughs_sel, years_sel, vehicles_sel):
-    filtered = df.copy()
-
-    if boroughs_sel and "ALL" not in boroughs_sel:
-        filtered = filtered[filtered["BOROUGH"].isin(boroughs_sel)]
-
-    if years_sel and "ALL" not in years_sel:
-        filtered = filtered[filtered["YEAR"].isin(years_sel)]
-
-    if vehicles_sel and "ALL" not in vehicles_sel and vehicle_cols:
-        mask = filtered[vehicle_cols[0]].isin(vehicles_sel)
-        for col in vehicle_cols[1:]:
-            mask |= filtered[col].isin(vehicles_sel)
-        filtered = filtered[mask]
-
-    return filtered
-
-
-def filter_person_data(df, boroughs_sel, years_sel, persons_sel):
-    filtered = df.copy()
-
-    if boroughs_sel and "ALL" not in boroughs_sel:
-        filtered = filtered[filtered["BOROUGH"].isin(boroughs_sel)]
-
-    if years_sel and "ALL" not in years_sel:
-        filtered = filtered[df["CRASH DATE"].dt.year.isin(years_sel)]
-
-    if persons_sel and "ALL" not in persons_sel:
-        filtered = filtered[filtered["PERSON_TYPE"].isin(persons_sel)]
-
-    return filtered
-
-
-# =============================================================================
-# NATURAL LANGUAGE SEARCH
-# =============================================================================
-
-def parse_search_query(query):
-    if not query:
-        return None, None, None
-
-    query = query.lower()
-
-    borough = next((b for b in boroughs if b.lower() in query), None)
-    year = next((y for y in years if str(y) in query), None)
-
-    person = None
-    if "pedestrian" in query:
-        person = [p for p in person_types if "pedestrian" in p.lower()]
-    elif "cyclist" in query or "bicyclist" in query:
-        person = [p for p in person_types if "cyclist" in p.lower() or "bicyclist" in p.lower()]
-
-    return ([borough] if borough else None,
-            [year] if year else None,
-            person)
-"""
-NYC Dashboard — Callbacks & Visualizations
-Commit 4
-"""
-
-from dash import Input, Output, State
-import plotly.express as px
-import plotly.graph_objects as go
-
-# =============================================================================
-# SEARCH CALLBACK
+# CALLBACKS: SEARCH
 # =============================================================================
 
 @app.callback(
@@ -322,9 +324,8 @@ def handle_search(search_query, clear_clicks, current_borough, current_year, cur
         person or current_person,
     )
 
-
 # =============================================================================
-# MAIN DASHBOARD CALLBACK
+# MAIN DASHBOARD CALLBACK (ALL CHARTS)
 # =============================================================================
 
 @app.callback(
@@ -350,113 +351,290 @@ def handle_search(search_query, clear_clicks, current_borough, current_year, cur
     ],
 )
 def update_dashboard(n_clicks, boroughs_sel, years_sel, vehicles_sel, persons_sel):
+    # Normalize list values
+    if boroughs_sel == "ALL" or boroughs_sel is None:
+        boroughs_sel = ["ALL"]
+    elif not isinstance(boroughs_sel, list):
+        boroughs_sel = [boroughs_sel]
 
-    # Prepare list values
-    boroughs_sel = [boroughs_sel] if boroughs_sel == "ALL" else boroughs_sel
-    years_sel = [years_sel] if years_sel == "ALL" else years_sel
-    vehicles_sel = [vehicles_sel] if vehicles_sel == "ALL" else vehicles_sel
-    persons_sel = [persons_sel] if persons_sel == "ALL" else persons_sel
+    if years_sel == "ALL" or years_sel is None:
+        years_sel = ["ALL"]
+    elif not isinstance(years_sel, list):
+        years_sel = [years_sel]
 
-    # Filter datasets
-    crash = filter_data(df_crash, boroughs_sel, years_sel, vehicles_sel)
-    person = filter_person_data(df_person, boroughs_sel, years_sel, persons_sel)
+    if vehicles_sel == "ALL" or vehicles_sel is None:
+        vehicles_sel = ["ALL"]
+    elif not isinstance(vehicles_sel, list):
+        vehicles_sel = [vehicles_sel]
 
-    # Summary stats
+    if persons_sel == "ALL" or persons_sel is None:
+        persons_sel = ["ALL"]
+    elif not isinstance(persons_sel, list):
+        persons_sel = [persons_sel]
+
+    # Build WHERE conditions
+    where_crash = build_crash_where(boroughs_sel, years_sel, vehicles_sel)
+    where_person = build_person_where(boroughs_sel, years_sel, persons_sel)
+
+    # ---------------- SUMMARY STATS ----------------
+    summary_row = con.execute(f"""
+        SELECT
+            COUNT(*) AS total_crashes,
+            SUM("NUMBER OF PERSONS INJURED") AS total_injuries,
+            SUM("NUMBER OF PERSONS KILLED") AS total_deaths
+        FROM crash
+        WHERE {where_crash}
+    """).fetchone()
+
+    total_crashes = int(summary_row[0] or 0)
+    total_injuries = int(summary_row[1] or 0)
+    total_deaths = int(summary_row[2] or 0)
+
     summary = html.Div(
         className="card",
         children=[
             html.Div(
                 className="summary-row",
                 children=[
-                    html.Div(["Total Crashes", f"{len(crash):,}"]),
-                    html.Div(["Injuries", f"{int(crash['NUMBER OF PERSONS INJURED'].sum()):,}"]),
-                    html.Div(["Deaths", f"{int(crash['NUMBER OF PERSONS KILLED'].sum()):,}"]),
+                    html.Div(["Total Crashes", f"{total_crashes:,}"]),
+                    html.Div(["Injuries", f"{total_injuries:,}"]),
+                    html.Div(["Deaths", f"{total_deaths:,}"]),
                 ],
             )
         ],
     )
 
-    # ---- CHARTS ----
+    # ---------------- TEMPORAL CHART ----------------
+    temporal_df = con.execute(f"""
+        SELECT
+            year(CAST("CRASH DATE" AS DATE)) AS YEAR,
+            COUNT(*) AS crashes
+        FROM crash
+        WHERE {where_crash}
+        GROUP BY YEAR
+        ORDER BY YEAR
+    """).df()
+
     fig_temporal = px.line(
-        crash.groupby("YEAR").size().reset_index(name="crashes"),
-        x="YEAR", y="crashes", title="Crashes Over Time"
+        temporal_df,
+        x="YEAR", y="crashes",
+        title="Crashes Over Time"
     )
+
+    # ---------------- BOROUGH CHART ----------------
+    borough_df = con.execute(f"""
+        SELECT
+            BOROUGH AS borough,
+            COUNT(*) AS crashes
+        FROM crash
+        WHERE {where_crash}
+          AND BOROUGH IS NOT NULL
+        GROUP BY BOROUGH
+        ORDER BY crashes DESC
+    """).df()
 
     fig_borough = px.bar(
-        crash["BOROUGH"].value_counts().reset_index(),
-        x="index", y="BOROUGH", title="Crashes by Borough"
+        borough_df,
+        x="borough", y="crashes",
+        title="Crashes by Borough"
     )
+
+    # ---------------- HOUR CHART ----------------
+    hour_df = con.execute(f"""
+        SELECT
+            EXTRACT(HOUR FROM CAST("CRASH TIME" AS TIME)) AS HOUR,
+            COUNT(*) AS crashes
+        FROM crash
+        WHERE {where_crash}
+        GROUP BY HOUR
+        ORDER BY HOUR
+    """).df()
 
     fig_hour = px.area(
-        crash.groupby("HOUR").size().reset_index(name="crashes"),
-        x="HOUR", y="crashes", title="Crashes by Hour"
+        hour_df,
+        x="HOUR", y="crashes",
+        title="Crashes by Hour of Day"
     )
 
-    # Person type
-    if "PERSON_TYPE" in person.columns:
-        fig_victim = px.pie(
-            person["PERSON_TYPE"].value_counts().head(5),
-            names=person["PERSON_TYPE"].value_counts().head(5).index,
-            values=person["PERSON_TYPE"].value_counts().head(5).values,
-            title="Victim Type Distribution",
-        )
+    # ---------------- VICTIM CHART ----------------
+    if "PERSON_TYPE" in person_cols:
+        victim_df = con.execute(f"""
+            SELECT
+                PERSON_TYPE,
+                COUNT(*) AS cnt
+            FROM person
+            WHERE {where_person}
+            GROUP BY PERSON_TYPE
+            ORDER BY cnt DESC
+            LIMIT 5
+        """).df()
+
+        if not victim_df.empty:
+            fig_victim = px.pie(
+                victim_df,
+                names="PERSON_TYPE",
+                values="cnt",
+                title="Victim Type Distribution",
+            )
+        else:
+            fig_victim = go.Figure()
     else:
         fig_victim = go.Figure()
 
-    # Contributing factors
-    factor_cols = [c for c in crash.columns if "CONTRIBUTING FACTOR" in c.upper()]
+    # ---------------- CONTRIBUTING FACTORS ----------------
+    factor_cols = [c for c in crash_cols if "CONTRIBUTING FACTOR" in c.upper()]
     if factor_cols:
-        top_factors = crash[factor_cols[0]].value_counts().head(10)
+        fcol = factor_cols[0]
+        factors_df = con.execute(f"""
+            SELECT
+                "{fcol}" AS factor,
+                COUNT(*) AS cnt
+            FROM crash
+            WHERE {where_crash}
+              AND "{fcol}" IS NOT NULL
+            GROUP BY factor
+            ORDER BY cnt DESC
+            LIMIT 10
+        """).df()
+
         fig_factors = px.bar(
-            x=top_factors.values, y=top_factors.index,
+            factors_df,
+            x="cnt", y="factor",
             orientation="h",
             title="Top 10 Contributing Factors",
         )
     else:
         fig_factors = go.Figure()
 
-    # Vehicle types
+    # ---------------- VEHICLE TYPES ----------------
     if vehicle_cols:
-        vcounts = crash[vehicle_cols[0]].value_counts().head(10)
+        vcol = vehicle_cols[0]
+        v_df = con.execute(f"""
+            SELECT
+                "{vcol}" AS vehicle,
+                COUNT(*) AS cnt
+            FROM crash
+            WHERE {where_crash}
+              AND "{vcol}" IS NOT NULL
+            GROUP BY vehicle
+            ORDER BY cnt DESC
+            LIMIT 10
+        """).df()
+
         fig_vehicle = px.bar(
-            x=vcounts.index, y=vcounts.values, title="Top 10 Vehicle Types"
+            v_df,
+            x="vehicle", y="cnt",
+            title="Top 10 Vehicle Types",
         )
     else:
         fig_vehicle = go.Figure()
 
-    # Map
-    map_data = crash.dropna(subset=["LATITUDE", "LONGITUDE"])
-    map_data = map_data.sample(n=min(2000, len(map_data)), random_state=42)
+    # ---------------- MAP CHART ----------------
+    # Limit rows returned for performance; DuckDB still reads full dataset efficiently.
+    map_df = con.execute(f"""
+        SELECT
+            LATITUDE,
+            LONGITUDE,
+            BOROUGH,
+            "NUMBER OF PERSONS INJURED" AS injured
+        FROM crash
+        WHERE {where_crash}
+          AND LATITUDE IS NOT NULL
+          AND LONGITUDE IS NOT NULL
+        ORDER BY random()
+        LIMIT 2000
+    """).df()
 
-    fig_map = px.scatter_mapbox(
-        map_data,
-        lat="LATITUDE",
-        lon="LONGITUDE",
-        zoom=9.5,
-        title="Crash Locations Map",
-    )
-    fig_map.update_layout(mapbox_style="open-street-map")
-
-    # Seasonal
-    season_counts = crash["SEASON"].value_counts()
-    fig_seasonal = px.bar(
-        x=season_counts.index, y=season_counts.values, title="Crashes by Season"
-    )
-
-    # Heatmap
-    crash["WEEKDAY"] = crash["CRASH DATE"].dt.day_name()
-    hm = crash.groupby(["HOUR", "WEEKDAY"]).size().reset_index(name="crashes")
-    heatpivot = hm.pivot(index="HOUR", columns="WEEKDAY", values="crashes").fillna(0)
-    fig_heatmap = px.imshow(heatpivot, title="Hour vs Day Heatmap")
-
-    # Age histogram
-    if "PERSON_AGE" in person.columns:
-        fig_age = px.histogram(
-            person[(person["PERSON_AGE"] > 0) & (person["PERSON_AGE"] < 120)],
-            x="PERSON_AGE",
-            nbins=30,
-            title="Age Distribution",
+    if not map_df.empty:
+        fig_map = px.scatter_mapbox(
+            map_df,
+            lat="LATITUDE",
+            lon="LONGITUDE",
+            hover_data=["BOROUGH", "injured"],
+            zoom=9.5,
+            title="Crash Locations Map (sample of up to 2,000 crashes)",
         )
+        fig_map.update_layout(mapbox_style="open-street-map")
+    else:
+        fig_map = go.Figure()
+
+    # ---------------- SEASONAL CHART ----------------
+    seasonal_df = con.execute(f"""
+        SELECT
+            CASE
+                WHEN EXTRACT(MONTH FROM CAST("CRASH DATE" AS DATE)) IN (3,4,5) THEN 'Spring'
+                WHEN EXTRACT(MONTH FROM CAST("CRASH DATE" AS DATE)) IN (6,7,8) THEN 'Summer'
+                WHEN EXTRACT(MONTH FROM CAST("CRASH DATE" AS DATE)) IN (9,10,11) THEN 'Fall'
+                WHEN EXTRACT(MONTH FROM CAST("CRASH DATE" AS DATE)) IN (12,1,2) THEN 'Winter'
+                ELSE 'Unknown'
+            END AS SEASON,
+            COUNT(*) AS crashes
+        FROM crash
+        WHERE {where_crash}
+        GROUP BY SEASON
+    """).df()
+
+    # enforce order
+    season_order = ["Spring", "Summer", "Fall", "Winter", "Unknown"]
+    seasonal_df["SEASON"] = pd.Categorical(seasonal_df["SEASON"], categories=season_order, ordered=True)
+    seasonal_df = seasonal_df.sort_values("SEASON")
+
+    fig_seasonal = px.bar(
+        seasonal_df,
+        x="SEASON", y="crashes",
+        title="Crashes by Season",
+    )
+
+    # ---------------- HEATMAP (HOUR vs WEEKDAY) ----------------
+    heat_df = con.execute(f"""
+        SELECT
+            EXTRACT(HOUR FROM CAST("CRASH TIME" AS TIME)) AS HOUR,
+            strftime(CAST("CRASH DATE" AS DATE), '%A') AS WEEKDAY,
+            COUNT(*) AS crashes
+        FROM crash
+        WHERE {where_crash}
+        GROUP BY HOUR, WEEKDAY
+    """).df()
+
+    weekday_order = [
+        "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"
+    ]
+    heat_df["WEEKDAY"] = pd.Categorical(heat_df["WEEKDAY"], categories=weekday_order, ordered=True)
+    heat_pivot = (
+        heat_df.pivot(index="HOUR", columns="WEEKDAY", values="crashes")
+        .fillna(0)
+        .reindex(columns=weekday_order)
+    )
+
+    fig_heatmap = px.imshow(
+        heat_pivot,
+        title="Hour vs Day Heatmap",
+        labels=dict(x="Day of Week", y="Hour of Day", color="Crashes"),
+        aspect="auto",
+    )
+
+    # ---------------- AGE HISTOGRAM ----------------
+    if "PERSON_AGE" in person_cols:
+        # limit rows only on Render to be extra safe, though DuckDB is efficient
+        limit_clause = "LIMIT 500000" if ON_RENDER else ""
+        age_df = con.execute(f"""
+            SELECT PERSON_AGE
+            FROM person
+            WHERE {where_person}
+              AND PERSON_AGE > 0
+              AND PERSON_AGE < 120
+            {limit_clause}
+        """).df()
+
+        if not age_df.empty:
+            fig_age = px.histogram(
+                age_df,
+                x="PERSON_AGE",
+                nbins=30,
+                title="Age Distribution of Crash Victims",
+            )
+        else:
+            fig_age = go.Figure()
     else:
         fig_age = go.Figure()
 
@@ -476,8 +654,8 @@ def update_dashboard(n_clicks, boroughs_sel, years_sel, vehicles_sel, persons_se
 
 
 # =============================================================================
-# RUN APP
+# RUN APP (LOCAL)
 # =============================================================================
+
 if __name__ == "__main__":
     app.run(debug=True, host="127.0.0.1", port=8050)
-
