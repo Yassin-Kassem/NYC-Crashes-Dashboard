@@ -3,3 +3,4 @@ plotly==5.18.0
 pandas==2.2.2
 gunicorn==21.2.0
 numpy==1.26.2
+polars==0.19.19
