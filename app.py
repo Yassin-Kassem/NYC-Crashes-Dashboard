@@ -15,12 +15,11 @@ print("Loading datasets...")
 print("This may take a moment with large datasets...")
 
 # Load crash data
-df_crash = pd.read_csv("data/cleaned_collisions_crash_level.csv", low_memory=False)
+CRASH_URL = "sha256:f490748af7d9c6c608c239566dfa39ff2b4d15b25eea36f8bdd1661a1fdf3b00"
+PERSON_URL = "sha256:bf88c80c5521c84fd777c9a6358b90aed025f57894d8a72258326c8242cc8f0a"
 
-# Load person data with optimized dtypes
-df_person = pd.read_csv(
-    "data/cleaned_collisions_person_level.csv",
-    low_memory=False,
+df_crash = pd.read_csv(CRASH_URL, low_memory=False)
+df_person = pd.read_csv(PERSON_URL, low_memory=False,
     usecols=[
         "COLLISION_ID",
         "CRASH DATE",
