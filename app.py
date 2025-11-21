@@ -259,3 +259,206 @@ def parse_search_query(query):
     return ([borough] if borough else None,
             [year] if year else None,
             person)
+"""
+NYC Dashboard — Callbacks & Visualizations
+Commit 4
+"""
+
+from dash import Input, Output, State
+import plotly.express as px
+import plotly.graph_objects as go
+
+# =============================================================================
+# SEARCH CALLBACK
+# =============================================================================
+
+@app.callback(
+    [
+        Output("borough-filter", "value"),
+        Output("year-filter", "value"),
+        Output("person-filter", "value"),
+    ],
+    [Input("search-input", "value"), Input("clear-search-btn", "n_clicks")],
+    [
+        State("borough-filter", "value"),
+        State("year-filter", "value"),
+        State("person-filter", "value"),
+    ],
+)
+def handle_search(search_query, clear_clicks, current_borough, current_year, current_person):
+    ctx = dash.callback_context
+
+    if not ctx.triggered:
+        return current_borough, current_year, current_person
+
+    trigger = ctx.triggered[0]["prop_id"].split(".")[0]
+
+    if trigger == "clear-search-btn":
+        return "ALL", "ALL", "ALL"
+
+    borough, year, person = parse_search_query(search_query)
+    return (
+        borough or current_borough,
+        year or current_year,
+        person or current_person,
+    )
+
+
+# =============================================================================
+# MAIN DASHBOARD CALLBACK
+# =============================================================================
+
+@app.callback(
+    [
+        Output("summary-stats", "children"),
+        Output("temporal-chart", "figure"),
+        Output("borough-chart", "figure"),
+        Output("hour-chart", "figure"),
+        Output("victim-chart", "figure"),
+        Output("factors-chart", "figure"),
+        Output("vehicle-chart", "figure"),
+        Output("map-chart", "figure"),
+        Output("seasonal-chart", "figure"),
+        Output("heatmap-chart", "figure"),
+        Output("age-chart", "figure"),
+    ],
+    [Input("generate-report-btn", "n_clicks")],
+    [
+        State("borough-filter", "value"),
+        State("year-filter", "value"),
+        State("vehicle-filter", "value"),
+        State("person-filter", "value"),
+    ],
+)
+def update_dashboard(n_clicks, boroughs_sel, years_sel, vehicles_sel, persons_sel):
+
+    # Prepare list values
+    boroughs_sel = [boroughs_sel] if boroughs_sel == "ALL" else boroughs_sel
+    years_sel = [years_sel] if years_sel == "ALL" else years_sel
+    vehicles_sel = [vehicles_sel] if vehicles_sel == "ALL" else vehicles_sel
+    persons_sel = [persons_sel] if persons_sel == "ALL" else persons_sel
+
+    # Filter datasets
+    crash = filter_data(df_crash, boroughs_sel, years_sel, vehicles_sel)
+    person = filter_person_data(df_person, boroughs_sel, years_sel, persons_sel)
+
+    # Summary stats
+    summary = html.Div(
+        className="card",
+        children=[
+            html.Div(
+                className="summary-row",
+                children=[
+                    html.Div(["Total Crashes", f"{len(crash):,}"]),
+                    html.Div(["Injuries", f"{int(crash['NUMBER OF PERSONS INJURED'].sum()):,}"]),
+                    html.Div(["Deaths", f"{int(crash['NUMBER OF PERSONS KILLED'].sum()):,}"]),
+                ],
+            )
+        ],
+    )
+
+    # ---- CHARTS ----
+    fig_temporal = px.line(
+        crash.groupby("YEAR").size().reset_index(name="crashes"),
+        x="YEAR", y="crashes", title="Crashes Over Time"
+    )
+
+    fig_borough = px.bar(
+        crash["BOROUGH"].value_counts().reset_index(),
+        x="index", y="BOROUGH", title="Crashes by Borough"
+    )
+
+    fig_hour = px.area(
+        crash.groupby("HOUR").size().reset_index(name="crashes"),
+        x="HOUR", y="crashes", title="Crashes by Hour"
+    )
+
+    # Person type
+    if "PERSON_TYPE" in person.columns:
+        fig_victim = px.pie(
+            person["PERSON_TYPE"].value_counts().head(5),
+            names=person["PERSON_TYPE"].value_counts().head(5).index,
+            values=person["PERSON_TYPE"].value_counts().head(5).values,
+            title="Victim Type Distribution",
+        )
+    else:
+        fig_victim = go.Figure()
+
+    # Contributing factors
+    factor_cols = [c for c in crash.columns if "CONTRIBUTING FACTOR" in c.upper()]
+    if factor_cols:
+        top_factors = crash[factor_cols[0]].value_counts().head(10)
+        fig_factors = px.bar(
+            x=top_factors.values, y=top_factors.index,
+            orientation="h",
+            title="Top 10 Contributing Factors",
+        )
+    else:
+        fig_factors = go.Figure()
+
+    # Vehicle types
+    if vehicle_cols:
+        vcounts = crash[vehicle_cols[0]].value_counts().head(10)
+        fig_vehicle = px.bar(
+            x=vcounts.index, y=vcounts.values, title="Top 10 Vehicle Types"
+        )
+    else:
+        fig_vehicle = go.Figure()
+
+    # Map
+    map_data = crash.dropna(subset=["LATITUDE", "LONGITUDE"])
+    map_data = map_data.sample(n=min(2000, len(map_data)), random_state=42)
+
+    fig_map = px.scatter_mapbox(
+        map_data,
+        lat="LATITUDE",
+        lon="LONGITUDE",
+        zoom=9.5,
+        title="Crash Locations Map",
+    )
+    fig_map.update_layout(mapbox_style="open-street-map")
+
+    # Seasonal
+    season_counts = crash["SEASON"].value_counts()
+    fig_seasonal = px.bar(
+        x=season_counts.index, y=season_counts.values, title="Crashes by Season"
+    )
+
+    # Heatmap
+    crash["WEEKDAY"] = crash["CRASH DATE"].dt.day_name()
+    hm = crash.groupby(["HOUR", "WEEKDAY"]).size().reset_index(name="crashes")
+    heatpivot = hm.pivot(index="HOUR", columns="WEEKDAY", values="crashes").fillna(0)
+    fig_heatmap = px.imshow(heatpivot, title="Hour vs Day Heatmap")
+
+    # Age histogram
+    if "PERSON_AGE" in person.columns:
+        fig_age = px.histogram(
+            person[(person["PERSON_AGE"] > 0) & (person["PERSON_AGE"] < 120)],
+            x="PERSON_AGE",
+            nbins=30,
+            title="Age Distribution",
+        )
+    else:
+        fig_age = go.Figure()
+
+    return (
+        summary,
+        fig_temporal,
+        fig_borough,
+        fig_hour,
+        fig_victim,
+        fig_factors,
+        fig_vehicle,
+        fig_map,
+        fig_seasonal,
+        fig_heatmap,
+        fig_age,
+    )
+
+
+# =============================================================================
+# RUN APP
+# =============================================================================
+if __name__ == "__main__":
+    app.run(debug=True, host="127.0.0.1", port=8050)
+
