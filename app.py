@@ -70,10 +70,10 @@ person_lazy = pl.scan_csv(PERSON_CSV_PATH, ignore_errors=True)
 crash_lazy = crash_lazy.with_columns(
     [
         pl.col("CRASH DATE")
-        .str.strptime(pl.Date, strict=False, fmt=None)
+        .str.to_date(strict=False)
         .alias("CRASH_DATE"),
         pl.col("CRASH TIME")
-        .str.strptime(pl.Time, strict=False, fmt=None)
+        .str.to_date(strict=False)
         .alias("CRASH_TIME"),
     ]
 ).with_columns(
@@ -101,7 +101,7 @@ crash_lazy = crash_lazy.with_columns(
 person_lazy = person_lazy.with_columns(
     [
         pl.col("CRASH DATE")
-        .str.strptime(pl.Date, strict=False, fmt=None)
+        .str.to_date(strict=False)
         .alias("CRASH_DATE"),
         pl.col("CRASH DATE").dt.year().alias("YEAR"),
     ]
