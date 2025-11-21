@@ -25,8 +25,8 @@ BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(exist_ok=True)
 
-CRASH_CSV_PATH = "data/cleaned_collisions_crash_level.csv"
-PERSON_CSV_PATH = "data/cleaned_collisions_person_level.csv"
+CRASH_CSV_PATH = DATA_DIR / "cleaned_collisions_crash_level.csv"
+PERSON_CSV_PATH = DATA_DIR / "cleaned_collisions_person_level.csv"
 
 
 # =============================================================================
