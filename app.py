@@ -194,3 +194,68 @@ app.layout = html.Div(
         html.Div("NYC Motor Vehicle Collisions Dashboard · GIU 2025", className="footer-text"),
     ],
 )
+
+"""
+NYC Dashboard Helper Functions
+Commit 3 — Filtering + Search Parser
+"""
+
+# =============================================================================
+# FILTERING FUNCTIONS
+# =============================================================================
+
+def filter_data(df, boroughs_sel, years_sel, vehicles_sel):
+    filtered = df.copy()
+
+    if boroughs_sel and "ALL" not in boroughs_sel:
+        filtered = filtered[filtered["BOROUGH"].isin(boroughs_sel)]
+
+    if years_sel and "ALL" not in years_sel:
+        filtered = filtered[filtered["YEAR"].isin(years_sel)]
+
+    if vehicles_sel and "ALL" not in vehicles_sel and vehicle_cols:
+        mask = filtered[vehicle_cols[0]].isin(vehicles_sel)
+        for col in vehicle_cols[1:]:
+            mask |= filtered[col].isin(vehicles_sel)
+        filtered = filtered[mask]
+
+    return filtered
+
+
+def filter_person_data(df, boroughs_sel, years_sel, persons_sel):
+    filtered = df.copy()
+
+    if boroughs_sel and "ALL" not in boroughs_sel:
+        filtered = filtered[filtered["BOROUGH"].isin(boroughs_sel)]
+
+    if years_sel and "ALL" not in years_sel:
+        filtered = filtered[df["CRASH DATE"].dt.year.isin(years_sel)]
+
+    if persons_sel and "ALL" not in persons_sel:
+        filtered = filtered[filtered["PERSON_TYPE"].isin(persons_sel)]
+
+    return filtered
+
+
+# =============================================================================
+# NATURAL LANGUAGE SEARCH
+# =============================================================================
+
+def parse_search_query(query):
+    if not query:
+        return None, None, None
+
+    query = query.lower()
+
+    borough = next((b for b in boroughs if b.lower() in query), None)
+    year = next((y for y in years if str(y) in query), None)
+
+    person = None
+    if "pedestrian" in query:
+        person = [p for p in person_types if "pedestrian" in p.lower()]
+    elif "cyclist" in query or "bicyclist" in query:
+        person = [p for p in person_types if "cyclist" in p.lower() or "bicyclist" in p.lower()]
+
+    return ([borough] if borough else None,
+            [year] if year else None,
+            person)
