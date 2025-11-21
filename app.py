@@ -6,6 +6,7 @@ Data Loading & Preprocessing
 import pandas as pd
 import numpy as np
 from datetime import datetime
+import os
 
 # =============================================================================
 # LOAD AND PREPARE DATA
@@ -14,23 +15,42 @@ from datetime import datetime
 print("Loading datasets...")
 print("This may take a moment with large datasets...")
 
-# Load crash data
+
 CRASH_URL = "https://github.com/Yassin-Kassem/NYC-Crashes-Dashboard/releases/download/v1.0/cleaned_collisions_crash_level.csv"
 PERSON_URL = "https://github.com/Yassin-Kassem/NYC-Crashes-Dashboard/releases/download/v1.0/cleaned_collisions_person_level.csv"
 
-df_crash = pd.read_csv(CRASH_URL, low_memory=False)
-df_person = pd.read_csv(PERSON_URL, low_memory=False,
-    usecols=[
-        "COLLISION_ID",
-        "CRASH DATE",
-        "CRASH TIME",
-        "BOROUGH",
-        "PERSON_TYPE",
-        "PERSON_AGE",
-        "PERSON_SEX",
-        "PERSON_INJURY",
-    ],
-)
+ON_RENDER = "RENDER" in os.environ  # Render sets this env variable automatically
+
+print("Running on Render:", ON_RENDER)
+
+if ON_RENDER:
+    print("⚠️ Render detected — loading LIGHT version of the dataset")
+    
+    df_crash = pd.read_csv(
+        CRASH_URL,
+        low_memory=False,
+        usecols=[
+            "COLLISION_ID", "CRASH DATE", "CRASH TIME", "BOROUGH",
+            "NUMBER OF PERSONS INJURED", "NUMBER OF PERSONS KILLED",
+            "LATITUDE", "LONGITUDE", "VEHICLE TYPE CODE 1"
+        ],
+        nrows=60000,
+    )
+
+    df_person = pd.read_csv(
+        PERSON_URL,
+        low_memory=False,
+        usecols=[
+            "COLLISION_ID", "CRASH DATE", "PERSON_TYPE",
+            "PERSON_AGE", "PERSON_SEX", "PERSON_INJURY"
+        ],
+        nrows=60000,
+    )
+else:
+    print("💻 Local environment — loading FULL dataset")
+    df_crash = pd.read_csv(CRASH_URL, low_memory=False)
+    df_person = pd.read_csv(PERSON_URL, low_memory=False)
+
 
 print(f"Loaded {len(df_crash):,} crashes and {len(df_person):,} person records")
 
