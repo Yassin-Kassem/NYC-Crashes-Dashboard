@@ -38,6 +38,7 @@ print("=" * 60)
 def load_data_from_url(url, sample_size, usecols=None):
     """Load CSV data from URL with sampling (supports .csv and .csv.gz)"""
     from io import BytesIO
+    import gzip
     
     print(f"📥 Downloading data from URL (sample: {sample_size:,} rows)...")
     
@@ -46,17 +47,23 @@ def load_data_from_url(url, sample_size, usecols=None):
         response = requests.get(url, stream=True)
         response.raise_for_status()
         
-        # Read content into BytesIO
-        content = BytesIO(response.content)
+        # Get the content
+        content = response.content
         
-        # Pandas will auto-detect gzip compression
+        # Check if it's gzipped (magic number 0x1f 0x8b)
+        is_gzipped = content[:2] == b'\x1f\x8b'
+        
+        if is_gzipped:
+            print("🗜️  Detected gzip compression, decompressing...")
+            content = gzip.decompress(content)
+        
+        # Now read as CSV
         df = pd.read_csv(
-            content,
+            BytesIO(content),
             low_memory=False,
             usecols=usecols,
             nrows=sample_size,
-            on_bad_lines='skip',  # Skip malformed lines
-            compression='infer'  # Auto-detect .gz
+            on_bad_lines='skip'
         )
         
         print(f"✅ Loaded {len(df):,} rows")
