@@ -17,9 +17,9 @@ from datetime import datetime
 # CONFIGURATION
 # =============================================================================
 
-# Smart sampling configuration - REDUCED for memory efficiency
-CRASH_SAMPLE_SIZE = 15000   # Reduced from 30k
-PERSON_SAMPLE_SIZE = 30000  # Reduced from 60k
+# Smart sampling configuration - MINIMAL for Render free tier (512MB RAM)
+CRASH_SAMPLE_SIZE = 8000    # Reduced to 8k crashes
+PERSON_SAMPLE_SIZE = 15000  # Reduced to 15k persons
 
 # External CSV URLs (use Google Drive, Dropbox, or GitHub releases)
 # Can be .csv or .csv.gz (gzip compressed)
@@ -28,7 +28,7 @@ PERSON_CSV_URL = os.getenv('PERSON_CSV_URL', None)
 
 print("=" * 60)
 print("NYC MOTOR VEHICLE COLLISIONS DASHBOARD")
-print("Optimized for Render Free Tier")
+print("Optimized for Render Free Tier (512MB RAM)")
 print("=" * 60)
 
 # =============================================================================
@@ -36,35 +36,50 @@ print("=" * 60)
 # =============================================================================
 
 def load_data_from_url(url, sample_size, usecols=None):
-    """Load CSV data from URL with sampling (supports .csv and .csv.gz)"""
+    """Load CSV data from URL with streaming and sampling (memory efficient)"""
     from io import BytesIO
     import gzip
     
     print(f"📥 Downloading data from URL (sample: {sample_size:,} rows)...")
     
     try:
-        # Download the file
+        # Download with streaming to avoid loading all at once
         response = requests.get(url, stream=True)
         response.raise_for_status()
         
-        # Get the content
-        content = response.content
-        
-        # Check if it's gzipped (magic number 0x1f 0x8b)
-        is_gzipped = content[:2] == b'\x1f\x8b'
+        # Read first 2 bytes to check compression
+        first_chunk = next(response.iter_content(chunk_size=2))
+        is_gzipped = first_chunk[:2] == b'\x1f\x8b'
         
         if is_gzipped:
-            print("🗜️  Detected gzip compression, decompressing...")
-            content = gzip.decompress(content)
-        
-        # Now read as CSV
-        df = pd.read_csv(
-            BytesIO(content),
-            low_memory=False,
-            usecols=usecols,
-            nrows=sample_size,
-            on_bad_lines='skip'
-        )
+            print("🗜️  Detected gzip, using streaming decompression...")
+            # Stream decompress - much more memory efficient
+            response = requests.get(url, stream=True)
+            response.raise_for_status()
+            response.raw.decode_content = True
+            
+            # Use gzip to decompress in streaming fashion
+            with gzip.open(response.raw, 'rt') as f:
+                # Read only what we need
+                df = pd.read_csv(
+                    f,
+                    low_memory=False,
+                    usecols=usecols,
+                    nrows=sample_size,
+                    on_bad_lines='skip'
+                )
+        else:
+            print("📄 Regular CSV, loading with limit...")
+            # Re-request since we consumed some bytes
+            response = requests.get(url, stream=True)
+            response.raise_for_status()
+            df = pd.read_csv(
+                response.raw,
+                low_memory=False,
+                usecols=usecols,
+                nrows=sample_size,
+                on_bad_lines='skip'
+            )
         
         print(f"✅ Loaded {len(df):,} rows")
         return df
@@ -246,7 +261,7 @@ app.layout = html.Div(
                 ),
                 html.Div(
                     className="app-header-meta",
-                    children=f"Dataset: {len(df_crash):,} crashes · {len(df_person):,} person records (representative sample)",
+                    children=f"Dataset: {len(df_crash):,} crashes · {len(df_person):,} person records (optimized sample)",
                 ),
             ],
         ),
