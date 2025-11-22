@@ -17,9 +17,9 @@ from datetime import datetime
 # CONFIGURATION
 # =============================================================================
 
-# Smart sampling configuration
-CRASH_SAMPLE_SIZE = 30000  # Load 30k most recent crashes
-PERSON_SAMPLE_SIZE = 60000  # Load 60k person records
+# Smart sampling configuration - REDUCED for memory efficiency
+CRASH_SAMPLE_SIZE = 15000   # Reduced from 30k
+PERSON_SAMPLE_SIZE = 30000  # Reduced from 60k
 
 # External CSV URLs (use Google Drive, Dropbox, or GitHub releases)
 # Can be .csv or .csv.gz (gzip compressed)
