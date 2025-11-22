@@ -3,6 +3,8 @@ NYC Motor Vehicle Collisions Dashboard
 Optimized for Render Free Tier with intelligent sampling
 """
 
+import os
+import requests
 import dash
 from dash import dcc, html, Input, Output, State
 import plotly.express as px
@@ -10,7 +12,6 @@ import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
 from datetime import datetime
-import os
 
 # =============================================================================
 # CONFIGURATION
@@ -21,13 +22,9 @@ CRASH_SAMPLE_SIZE = 30000  # Load 30k most recent crashes
 PERSON_SAMPLE_SIZE = 60000  # Load 60k person records
 
 # External CSV URLs (use Google Drive, Dropbox, or GitHub releases)
-# OPTION 1: Google Drive (recommended - see instructions below)
+# Can be .csv or .csv.gz (gzip compressed)
 CRASH_CSV_URL = os.getenv('CRASH_CSV_URL', None)
 PERSON_CSV_URL = os.getenv('PERSON_CSV_URL', None)
-
-# OPTION 2: GitHub Release (if files are < 2GB)
-# Upload to GitHub Release, then use raw URLs like:
-# CRASH_CSV_URL = "https://github.com/yourusername/yourrepo/releases/download/v1.0/crashes.csv"
 
 print("=" * 60)
 print("NYC MOTOR VEHICLE COLLISIONS DASHBOARD")
@@ -39,59 +36,59 @@ print("=" * 60)
 # =============================================================================
 
 def load_data_from_url(url, sample_size, usecols=None):
-    """Load CSV data from URL with sampling"""
-    import requests
-    from io import StringIO
+    """Load CSV data from URL with sampling (supports .csv and .csv.gz)"""
+    from io import BytesIO
     
     print(f"📥 Downloading data from URL (sample: {sample_size:,} rows)...")
     
     try:
-        # Stream the CSV
+        # Download the file
         response = requests.get(url, stream=True)
         response.raise_for_status()
         
-        # Read in chunks
-        chunks = []
-        lines_read = 0
+        # Read content into BytesIO
+        content = BytesIO(response.content)
         
-        for chunk in response.iter_lines(decode_unicode=True):
-            if chunk:
-                chunks.append(chunk)
-                lines_read += 1
-                if lines_read >= sample_size + 1:  # +1 for header
-                    break
-        
-        # Parse CSV
-        csv_data = '\n'.join(chunks)
-        df = pd.read_csv(StringIO(csv_data), low_memory=False, usecols=usecols)
+        # Pandas will auto-detect gzip compression
+        df = pd.read_csv(
+            content,
+            low_memory=False,
+            usecols=usecols,
+            nrows=sample_size,
+            on_bad_lines='skip',  # Skip malformed lines
+            compression='infer'  # Auto-detect .gz
+        )
         
         print(f"✅ Loaded {len(df):,} rows")
         return df
         
     except Exception as e:
         print(f"❌ Error loading from URL: {e}")
+        print(f"   URL: {url[:100]}...")
         raise
 
 def load_data_local(crash_path, person_path):
-    """Fallback: Load from local files"""
-    print("📂 Loading from local files...")
+    """Load from local files (supports .csv and .csv.gz)"""
+    print(f"📂 Loading from local files...")
+    print(f"   Crash: {crash_path}")
+    print(f"   Person: {person_path}")
     
+    # Pandas automatically handles .gz files
     df_crash = pd.read_csv(
         crash_path,
         low_memory=False,
+        compression='infer',  # Auto-detect gzip
         nrows=CRASH_SAMPLE_SIZE
     )
     
     df_person = pd.read_csv(
         person_path,
         low_memory=False,
-        usecols=[
-            "COLLISION_ID", "CRASH DATE", "CRASH TIME", "BOROUGH",
-            "PERSON_TYPE", "PERSON_AGE", "PERSON_SEX", "PERSON_INJURY",
-        ],
+        compression='infer',  # Auto-detect gzip
         nrows=PERSON_SAMPLE_SIZE
     )
     
+    print(f"✅ Loaded {len(df_crash):,} crashes and {len(df_person):,} person records")
     return df_crash, df_person
 
 # =============================================================================
@@ -104,20 +101,35 @@ print(f"Loading sampled data (Crashes: {CRASH_SAMPLE_SIZE:,}, Persons: {PERSON_S
 if CRASH_CSV_URL and PERSON_CSV_URL:
     print("🌐 Using external CSV URLs...")
     df_crash = load_data_from_url(CRASH_CSV_URL, CRASH_SAMPLE_SIZE)
-    df_person = load_data_from_url(
-        PERSON_CSV_URL, 
-        PERSON_SAMPLE_SIZE,
-        usecols=[
-            "COLLISION_ID", "CRASH DATE", "CRASH TIME", "BOROUGH",
-            "PERSON_TYPE", "PERSON_AGE", "PERSON_SEX", "PERSON_INJURY",
-        ]
-    )
+    df_person = load_data_from_url(PERSON_CSV_URL, PERSON_SAMPLE_SIZE)
+    print(f"📋 Loaded from URLs successfully")
 else:
     print("⚠️  No CSV URLs configured, using local files...")
-    df_crash, df_person = load_data_local(
-        "data/cleaned_collisions_crash_level.csv",
-        "data/cleaned_collisions_person_level.csv"
-    )
+    
+    # Try compressed files first (.csv.gz), then regular CSV
+    try:
+        # Option 1: Try gzipped files (best for GitHub)
+        df_crash, df_person = load_data_local(
+            "data/cleaned_collisions_crash_level.csv.gz",
+            "data/cleaned_collisions_person_level.csv.gz"
+        )
+    except FileNotFoundError:
+        try:
+            # Option 2: Try regular CSV files
+            df_crash, df_person = load_data_local(
+                "data/cleaned_collisions_crash_level.csv",
+                "data/cleaned_collisions_person_level.csv"
+            )
+        except FileNotFoundError:
+            # Option 3: Try sampled files
+            try:
+                df_crash, df_person = load_data_local(
+                    "data/sampled_crashes.csv",
+                    "data/sampled_persons.csv"
+                )
+            except FileNotFoundError as e:
+                print("❌ No data files found! Please add CSV files to the data/ folder")
+                raise e
 
 print(f"✅ Loaded {len(df_crash):,} crashes and {len(df_person):,} person records")
 

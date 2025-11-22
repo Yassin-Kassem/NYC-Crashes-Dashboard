@@ -45,3 +45,4 @@ Thumbs.db
 # Data (optional - uncomment if you don't want to commit large CSV files)
 *.csv
 data/*.csv
+data/*.csv.gz
